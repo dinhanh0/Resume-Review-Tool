@@ -5,14 +5,18 @@ import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 
-# Download once
+# Download required NLTK resources if missing
 try:
     stop_words = set(stopwords.words("english"))
-except:
-    nltk.download("punkt")
+except LookupError:
     nltk.download("stopwords")
     stop_words = set(stopwords.words("english"))
 
+try:
+    word_tokenize("test")
+except LookupError:
+    nltk.download("punkt")
+    nltk.download("punkt_tab")
 
 def clean_text(text: str) -> str:
     """
