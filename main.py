@@ -4,12 +4,14 @@ import re
 import html
 from pathlib import Path
 
+import joblib
 import pandas as pd
 import pdfplumber
 from docx import Document
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 SRC_DIR = PROJECT_ROOT / "src"
+MODEL_PATH = PROJECT_ROOT / "models" / "resume_category_model.joblib"
 
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
@@ -20,7 +22,7 @@ from match import overall_match
 
 
 def read_txt_file(file_path: str) -> str:
-    with open(file_path, "r", encoding="utf-8") as file:
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as file:
         return file.read()
 
 
@@ -41,6 +43,12 @@ def read_pdf_file(file_path: str) -> str:
     return "\n".join(text)
 
 
+def read_html_file(file_path: str) -> str:
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as file:
+        raw = file.read()
+    return strip_html_tags(raw)
+
+
 def load_text(file_path: str) -> str:
     extension = Path(file_path).suffix.lower()
 
@@ -50,6 +58,8 @@ def load_text(file_path: str) -> str:
         return read_docx_file(file_path)
     if extension == ".pdf":
         return read_pdf_file(file_path)
+    if extension in [".html", ".htm"]:
+        return read_html_file(file_path)
 
     raise ValueError(f"Unsupported file type: {extension}")
 
@@ -186,6 +196,52 @@ def classify_match(score: float) -> str:
     return "Low Match"
 
 
+def load_trained_model():
+    if MODEL_PATH.exists():
+        try:
+            return joblib.load(MODEL_PATH)
+        except Exception:
+            return None
+    return None
+
+
+def predict_category(model, text: str):
+    if model is None:
+        return None, None
+
+    try:
+        predicted_label = model.predict([text])[0]
+    except Exception:
+        return None, None
+
+    confidence = None
+    if hasattr(model, "predict_proba"):
+        try:
+            probabilities = model.predict_proba([text])[0]
+            confidence = float(max(probabilities))
+        except Exception:
+            confidence = None
+
+    return predicted_label, confidence
+
+
+def category_alignment_score(resume_category, job_category) -> float:
+    if not resume_category or not job_category:
+        return 0.0
+    if resume_category == job_category:
+        return 100.0
+    return 0.0
+
+
+def preview_text(text: str, max_length: int = 700) -> str:
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if len(text) <= max_length:
+        return text
+
+    return text[:max_length].rstrip() + "..."
+
+
 def generate_feedback(result: dict, resume_data: dict) -> list[str]:
     feedback = []
 
@@ -217,16 +273,24 @@ def generate_feedback(result: dict, resume_data: dict) -> list[str]:
             f"Detected about {resume_data['experience_years']} year(s) of experience."
         )
 
+    if result.get("resume_category_pred"):
+        resume_msg = f"AI predicted the resume category as {result['resume_category_pred']}"
+        if result.get("resume_category_conf") is not None:
+            resume_msg += f" with {result['resume_category_conf'] * 100:.2f}% confidence"
+        feedback.append(resume_msg + ".")
+
+    if result.get("job_category_pred"):
+        job_msg = f"AI predicted the job description category as {result['job_category_pred']}"
+        if result.get("job_category_conf") is not None:
+            job_msg += f" with {result['job_category_conf'] * 100:.2f}% confidence"
+        feedback.append(job_msg + ".")
+
+    if result.get("ai_category_score") == 100.0:
+        feedback.append("The AI category model thinks the resume and job description belong to the same category.")
+    elif result.get("ai_category_score") == 0.0 and result.get("resume_category_pred") and result.get("job_category_pred"):
+        feedback.append("The AI category model thinks the resume and job description belong to different categories.")
+
     return feedback
-
-
-def preview_text(text: str, max_length: int = 700) -> str:
-    text = re.sub(r"\s+", " ", text).strip()
-
-    if len(text) <= max_length:
-        return text
-
-    return text[:max_length].rstrip() + "..."
 
 
 def print_list(title: str, items: list[str]) -> None:
@@ -273,6 +337,24 @@ def print_results(
 
     print_extracted_summary("WHAT THE PROGRAM EXTRACTED FROM THE RESUME", resume_data)
     print_extracted_summary("WHAT THE PROGRAM EXTRACTED FROM THE JOB DESCRIPTION", job_data)
+
+    if result.get("resume_category_pred") or result.get("job_category_pred"):
+        print("\nAI CATEGORY PREDICTIONS:")
+        print(
+            f"Predicted Resume Category: {result.get('resume_category_pred') or 'Unavailable'}"
+            + (
+                f" ({result['resume_category_conf'] * 100:.2f}% confidence)"
+                if result.get("resume_category_conf") is not None else ""
+            )
+        )
+        print(
+            f"Predicted Job Description Category: {result.get('job_category_pred') or 'Unavailable'}"
+            + (
+                f" ({result['job_category_conf'] * 100:.2f}% confidence)"
+                if result.get("job_category_conf") is not None else ""
+            )
+        )
+        print(f"AI Category Alignment Score: {result.get('ai_category_score', 0.0)}%")
 
     print(f"\nMatch Level: {classify_match(result['overall_score'])}")
     print(f"Overall Match Score: {result['overall_score']}%")
@@ -417,6 +499,24 @@ def main() -> None:
         final_resume_skills,
         final_job_skills
     )
+
+    model = load_trained_model()
+    resume_category_pred, resume_category_conf = predict_category(model, resume_raw)
+    job_category_pred, job_category_conf = predict_category(model, job_raw)
+
+    result["resume_category_pred"] = resume_category_pred
+    result["resume_category_conf"] = resume_category_conf
+    result["job_category_pred"] = job_category_pred
+    result["job_category_conf"] = job_category_conf
+    result["ai_category_score"] = category_alignment_score(resume_category_pred, job_category_pred)
+
+    if model is not None:
+        hybrid_score = (
+            result["text_similarity"] * 0.50
+            + result["skill_score"] * 0.30
+            + result["ai_category_score"] * 0.20
+        )
+        result["overall_score"] = round(hybrid_score, 2)
 
     print_results(resume_raw, job_raw, resume_data, job_data, result)
 

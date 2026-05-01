@@ -1,11 +1,17 @@
 import re
 import html
 import spacy
+import subprocess
+import sys
 
 try:
     nlp = spacy.load("en_core_web_sm")
 except Exception:
-    nlp = None
+    try:
+        subprocess.check_call([sys.executable, "-m", "spacy", "download", "en_core_web_sm"])
+        nlp = spacy.load("en_core_web_sm")
+    except Exception:
+        nlp = None
 
 
 COMMON_SKILLS = [
