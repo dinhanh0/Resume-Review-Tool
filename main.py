@@ -1,10 +1,8 @@
-import os
 import sys
 import re
 import html
 from pathlib import Path
 
-import pandas as pd
 import pdfplumber
 from docx import Document
 
@@ -15,49 +13,19 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from preprocess import preprocess_text
-from extract import extract_all, extract_skills
+from extract import extract_all
+from taxonomy import load_taxonomy_terms, extract_taxonomy_matches
+from domain_classifier import predict_domain
 from match import overall_match
 
 
-def read_txt_file(file_path: str) -> str:
-    with open(file_path, "r", encoding="utf-8") as file:
-        return file.read()
-
-
-def read_docx_file(file_path: str) -> str:
-    doc = Document(file_path)
-    return "\n".join(paragraph.text for paragraph in doc.paragraphs)
-
-
-def read_pdf_file(file_path: str) -> str:
-    text = []
-
-    with pdfplumber.open(file_path) as pdf:
-        for page in pdf.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text.append(page_text)
-
-    return "\n".join(text)
-
-
-def load_text(file_path: str) -> str:
-    extension = Path(file_path).suffix.lower()
-
-    if extension == ".txt":
-        return read_txt_file(file_path)
-    if extension == ".docx":
-        return read_docx_file(file_path)
-    if extension == ".pdf":
-        return read_pdf_file(file_path)
-
-    raise ValueError(f"Unsupported file type: {extension}")
-
-
-def normalize_text(value) -> str:
-    if pd.isna(value):
-        return ""
-    return str(value).strip()
+BAD_FINAL_SKILLS = {
+    "science", "design", "leadership", "database", "databases",
+    "marketing", "project management", "fast-paced", "team-oriented",
+    "rapport", "attentive service", "level", "levels", "writing",
+    "environment", "construction laborers", "administrative", "materials",
+    "models", "tools", "delivery"
+}
 
 
 def strip_html_tags(text: str) -> str:
@@ -81,11 +49,10 @@ def clean_placeholder_text(text: str) -> str:
         "current title",
         "current position",
         "present",
-        "n/a"
+        "n/a",
     ]
 
     cleaned = text
-
     for phrase in bad_phrases:
         cleaned = re.sub(rf"\b{re.escape(phrase)}\b", " ", cleaned, flags=re.IGNORECASE)
 
@@ -94,76 +61,100 @@ def clean_placeholder_text(text: str) -> str:
 
 
 def clean_resume_text(text: str) -> str:
-    text = strip_html_tags(text)
-    text = clean_placeholder_text(text)
-    return text
+    return clean_placeholder_text(strip_html_tags(text))
 
 
 def clean_job_text(text: str) -> str:
-    text = strip_html_tags(text)
-    text = clean_placeholder_text(text)
-    return text
+    return clean_placeholder_text(strip_html_tags(text))
 
 
-def load_reference_terms(reference_folder: Path) -> set[str]:
-    terms = set()
-
-    if not reference_folder.exists():
-        return terms
-
-    bad_terms = {
-        "im", "lv", "level", "levels", "skill", "skills",
-        "knowledge", "abilities", "ability", "title",
-        "description", "work", "worker", "job", "jobs",
-        "occupation", "occupations", "activity", "activities",
-        "element", "elements", "task", "tasks", "category",
-        "city", "state", "company", "name", "current company name",
-        "current", "present", "year", "years", "information",
-        "data", "worker characteristics", "occupation title",
-        "science", "design", "leadership", "database", "databases",
-        "marketing", "project management"
-    }
-
-    for file_path in reference_folder.glob("*.xlsx"):
-        try:
-            df = pd.read_excel(file_path)
-        except Exception:
-            continue
-
-        for column in df.columns:
-            for value in df[column]:
-                text = normalize_text(value).lower()
-
-                if not text:
-                    continue
-                if len(text) < 4 or len(text) > 40:
-                    continue
-                if text.isdigit():
-                    continue
-                if text in bad_terms:
-                    continue
-                if re.fullmatch(r"[\W_]+", text):
-                    continue
-                if re.search(r"\b\d+\b", text):
-                    continue
-                if text.count(" ") > 4:
-                    continue
-
-                terms.add(text)
-
-    return terms
+def read_txt_file(file_path: Path) -> str:
+    return file_path.read_text(encoding="utf-8", errors="ignore")
 
 
-def extract_reference_terms_from_text(text: str, reference_terms: set[str]) -> list[str]:
-    text_lower = text.lower()
-    found = []
+def read_docx_file(file_path: Path) -> str:
+    doc = Document(file_path)
+    return "\n".join(paragraph.text for paragraph in doc.paragraphs)
 
-    for term in reference_terms:
-        pattern = rf"\b{re.escape(term)}\b"
-        if re.search(pattern, text_lower):
-            found.append(term)
 
-    return sorted(list(set(found)))
+def read_pdf_file(file_path: Path) -> str:
+    pages = []
+    with pdfplumber.open(file_path) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text()
+            if page_text:
+                pages.append(page_text)
+    return "\n".join(pages)
+
+
+def load_resume_file(file_path: Path) -> str:
+    ext = file_path.suffix.lower()
+
+    if ext == ".txt":
+        return read_txt_file(file_path)
+    if ext == ".docx":
+        return read_docx_file(file_path)
+    if ext == ".pdf":
+        return read_pdf_file(file_path)
+
+    raise ValueError(
+        f"Unsupported resume file type: {ext}. Please use TXT, PDF, or DOCX."
+    )
+
+
+def list_resume_files(folder_path: Path) -> list[Path]:
+    supported = {".txt", ".pdf", ".docx"}
+
+    if not folder_path.exists():
+        return []
+
+    files = [
+        file_path for file_path in folder_path.iterdir()
+        if file_path.is_file() and file_path.suffix.lower() in supported
+    ]
+
+    return sorted(files, key=lambda p: p.name.lower())
+
+
+def choose_resume_from_folder(folder_path: Path) -> str:
+    supported_files = list_resume_files(folder_path)
+
+    all_files = []
+    if folder_path.exists():
+        all_files = [file_path for file_path in folder_path.iterdir() if file_path.is_file()]
+
+    if not supported_files:
+        image_files = [
+            file_path for file_path in all_files
+            if file_path.suffix.lower() in {".png", ".jpg", ".jpeg"}
+        ]
+
+        if image_files:
+            raise ValueError(
+                "Image resumes are not supported. Please use a TXT, PDF, or DOCX file in the 'resume input' folder."
+            )
+
+        raise FileNotFoundError(
+            f"No supported resume files found in folder: {folder_path}"
+        )
+
+    print("\nResume files found in 'resume input':")
+    for index, file_path in enumerate(supported_files, start=1):
+        print(f"{index}. {file_path.name}")
+
+    choice = input("Choose a resume file number: ").strip()
+
+    if not choice.isdigit():
+        raise ValueError("Please enter a valid number.")
+
+    file_index = int(choice) - 1
+    if file_index < 0 or file_index >= len(supported_files):
+        raise IndexError("Selected file number is out of range.")
+
+    selected_file = supported_files[file_index]
+    print(f"Using resume file: {selected_file.name}")
+
+    return clean_resume_text(load_resume_file(selected_file))
 
 
 def combine_skills(base_skills: list[str], extra_skills: list[str]) -> list[str]:
@@ -177,18 +168,49 @@ def combine_skills(base_skills: list[str], extra_skills: list[str]) -> list[str]
         if skill and isinstance(skill, str):
             combined.add(skill.lower().strip())
 
-    return sorted(list(combined))
+    return sorted(combined)
+
+
+def clean_final_skills(skills: list[str]) -> list[str]:
+    cleaned = []
+    for skill in skills:
+        skill = skill.lower().strip()
+        if not skill:
+            continue
+        if skill in BAD_FINAL_SKILLS:
+            continue
+        if len(skill) <= 2:
+            continue
+        cleaned.append(skill)
+
+    return sorted(set(cleaned))
 
 
 def classify_match(score: float) -> str:
-    if score >= 80:
+    if score >= 75:
         return "Strong Match"
-    if score >= 60:
+    if score >= 50:
         return "Moderate Match"
     return "Low Match"
 
 
-def generate_feedback(result: dict, resume_data: dict) -> list[str]:
+def preview_text(text: str, max_length: int = 700) -> str:
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) <= max_length:
+        return text
+    return text[:max_length].rstrip() + "..."
+
+
+def print_list(title: str, items: list[str]) -> None:
+    print(f"\n{title}:")
+    if items:
+        for item in items:
+            print(f"- {item}")
+    else:
+        print("None")
+
+
+def generate_feedback(result: dict, resume_data: dict, job_data: dict, resume_domain_conf, job_domain_conf) -> list[str]:
     feedback = []
 
     if result["overall_score"] >= 80:
@@ -213,54 +235,41 @@ def generate_feedback(result: dict, resume_data: dict) -> list[str]:
             "Consider adding or emphasizing these missing skills: "
             + ", ".join(result["missing_skills"][:10])
         )
-    else:
-        feedback.append("No missing skills were detected from the extracted job keywords.")
 
-    if result["text_similarity"] < 50:
-        feedback.append("Try aligning your wording more closely with the job description.")
-
-    if resume_data["experience_years"] == 0:
-        feedback.append("No clear years-of-experience phrase was detected in the resume.")
-    else:
+    if job_data["required_years"] > 0 and resume_data["experience_years"] < job_data["required_years"]:
         feedback.append(
-            f"Detected about {resume_data['experience_years']} year(s) of experience."
+            f"Your resume shows about {resume_data['experience_years']} year(s) of experience, while the job asks for about {job_data['required_years']}."
         )
+
+    feedback.append(
+        f"Resume/job family alignment: resume predicted as {resume_domain_conf[0]}, job predicted as {job_domain_conf[0]}."
+    )
 
     return feedback
 
 
-def preview_text(text: str, max_length: int = 700) -> str:
-    text = re.sub(r"\s+", " ", text).strip()
-    if len(text) <= max_length:
-        return text
-    return text[:max_length].rstrip() + "..."
+def print_results(
+    resume_data: dict,
+    job_data: dict,
+    result: dict,
+    resume_raw: str,
+    job_raw: str,
+    resume_domain_conf,
+    job_domain_conf,
+) -> None:
+    print("\nResume Review Result")
 
-
-def print_list(title: str, items: list[str]) -> None:
-    print(f"\n{title}:")
-    if items:
-        for item in items:
-            print(f"- {item}")
-    else:
-        print("None")
-
-
-def print_results(resume_data: dict, job_data: dict, result: dict, resume_raw: str, job_raw: str) -> None:
-    print("\n" + "=" * 70)
-    print("RESUME REVIEW RESULTS")
-    print("=" * 70)
-
-    print("\nRESUME PREVIEW:")
+    print("\nResume Preview:")
     print(preview_text(resume_raw))
 
-    print("\nJOB DESCRIPTION PREVIEW:")
+    print("\nJob Description Preview:")
     print(preview_text(job_raw))
 
-    print("\nWHAT THE PROGRAM EXTRACTED FROM THE RESUME")
-    print("------------------------------------------")
-    print(f"Email: {resume_data['email'] or 'Not found'}")
+    print("\nExtracted from Resume")
+    print(f"\nEmail: {resume_data['email'] or 'Not found'}")
     print(f"Phone: {resume_data['phone'] or 'Not found'}")
     print(f"Years of Experience Found: {resume_data['experience_years']}")
+    print(f"Education Level: {resume_data['education_level']}")
     print("Skills Found:")
     if resume_data["skills"]:
         for skill in resume_data["skills"]:
@@ -268,11 +277,9 @@ def print_results(resume_data: dict, job_data: dict, result: dict, resume_raw: s
     else:
         print("None")
 
-    print("\nWHAT THE PROGRAM EXTRACTED FROM THE JOB DESCRIPTION")
-    print("---------------------------------------------------")
-    print(f"Email: {job_data['email'] or 'Not found'}")
-    print(f"Phone: {job_data['phone'] or 'Not found'}")
-    print(f"Years of Experience Found: {job_data['experience_years']}")
+    print("\nExtracted from Job Description")
+    print(f"\nRequired Years Found: {job_data['required_years']}")
+    print(f"Required Education Level: {job_data['education_level']}")
     print("Skills Found:")
     if job_data["skills"]:
         for skill in job_data["skills"]:
@@ -280,10 +287,18 @@ def print_results(resume_data: dict, job_data: dict, result: dict, resume_raw: s
     else:
         print("None")
 
+    print("\nPredicted Job Family")
+    print(f"\nResume Domain: {resume_domain_conf[0]} ({round(resume_domain_conf[1] * 100, 2)}%)")
+    print(f"Job Domain: {job_domain_conf[0]} ({round(job_domain_conf[1] * 100, 2)}%)")
+
     print(f"\nMatch Level: {classify_match(result['overall_score'])}")
     print(f"Overall Match Score: {result['overall_score']}%")
-    print(f"Text Similarity Score: {result['text_similarity']}%")
+    print(f"Semantic Text Similarity: {result['text_similarity']}%")
+    print(f"Bullet/Requirement Similarity: {result['bullet_similarity']}%")
     print(f"Skill Match Score: {result['skill_score']}%")
+    print(f"Experience Alignment Score: {result['experience_score']}%")
+    print(f"Education Alignment Score: {result['education_score']}%")
+    print(f"Job-Family Alignment Score: {result['domain_score']}%")
 
     print_list("Matched Skills", result["matched_skills"])
 
@@ -297,36 +312,8 @@ def print_results(resume_data: dict, job_data: dict, result: dict, resume_raw: s
     print_list("Missing Skills", result["missing_skills"])
 
     print("\nFeedback:")
-    for item in generate_feedback(result, resume_data):
+    for item in generate_feedback(result, resume_data, job_data, resume_domain_conf, job_domain_conf):
         print(f"- {item}")
-
-    print("=" * 70)
-
-
-def load_resume_from_csv(csv_path: Path, row_index: int) -> str:
-    df = pd.read_csv(csv_path)
-
-    if "Resume_html" not in df.columns:
-        raise ValueError("Resume.csv does not contain a 'Resume_html' column.")
-
-    if row_index < 0 or row_index >= len(df):
-        raise IndexError("Resume row index is out of range.")
-
-    resume_text = normalize_text(df.loc[row_index, "Resume_html"])
-    return clean_resume_text(resume_text)
-
-
-def load_job_from_csv(csv_path: Path, row_index: int) -> str:
-    df = pd.read_csv(csv_path)
-
-    if "job_description" not in df.columns:
-        raise ValueError("training_data.csv does not contain a 'job_description' column.")
-
-    if row_index < 0 or row_index >= len(df):
-        raise IndexError("Job description row index is out of range.")
-
-    job_text = normalize_text(df.loc[row_index, "job_description"])
-    return clean_job_text(job_text)
 
 
 def get_multiline_text(label: str) -> str:
@@ -344,53 +331,26 @@ def get_multiline_text(label: str) -> str:
 
 def main() -> None:
     print("Resume Review Tool")
-    print("Choose an input mode:")
-    print("1. Enter file paths for resume and job description")
-    print("2. Paste resume and job description text")
-    print("3. Use sample data from Resume.csv and training_data.csv")
+    print("\nChoose input mode:")
+    print("1. Paste resume text")
+    print("2. Load resume from 'resume input' folder (supported types are .pdf, .docx, .txt)")
 
-    choice = input("Enter 1, 2, or 3: ").strip()
-
-    resume_raw = ""
-    job_raw = ""
+    choice = input("Enter 1 or 2: ").strip()
 
     try:
         if choice == "1":
-            resume_path = input("Enter path to resume file: ").strip()
-            job_path = input("Enter path to job description file: ").strip()
-
-            if not os.path.exists(resume_path):
-                print(f"Resume file not found: {resume_path}")
-                return
-
-            if not os.path.exists(job_path):
-                print(f"Job description file not found: {job_path}")
-                return
-
-            resume_raw = clean_resume_text(load_text(resume_path))
-            job_raw = clean_job_text(load_text(job_path))
-
-        elif choice == "2":
             resume_raw = clean_resume_text(get_multiline_text("resume text"))
-            job_raw = clean_job_text(get_multiline_text("job description text"))
-
-        elif choice == "3":
-            resume_csv_path = PROJECT_ROOT / "data" / "Resume data" / "Resume.csv"
-            job_csv_path = PROJECT_ROOT / "data" / "Resume data" / "training_data.csv"
-
-            resume_index = int(input("Enter resume row index: ").strip())
-            job_index = int(input("Enter job description row index: ").strip())
-
-            resume_raw = load_resume_from_csv(resume_csv_path, resume_index)
-            job_raw = load_job_from_csv(job_csv_path, job_index)
-
+        elif choice == "2":
+            resume_folder = PROJECT_ROOT / "resume input"
+            resume_raw = choose_resume_from_folder(resume_folder)
         else:
-            print("Invalid choice.")
+            print("Invalid option.")
             return
-
     except Exception as error:
-        print(f"Input error: {error}")
+        print(f"Resume input error: {error}")
         return
+
+    job_raw = clean_job_text(get_multiline_text("job description text"))
 
     if not resume_raw.strip():
         print("Resume input is empty.")
@@ -401,34 +361,52 @@ def main() -> None:
         return
 
     reference_folder = PROJECT_ROOT / "data" / "Job skill reference data"
-    reference_terms = load_reference_terms(reference_folder)
+    taxonomy_terms = load_taxonomy_terms(reference_folder)
 
     resume_clean = preprocess_text(resume_raw)
     job_clean = preprocess_text(job_raw)
 
-    resume_data = extract_all(resume_raw)
-    job_data = extract_all(job_raw)
+    resume_data = extract_all(resume_raw, is_job=False)
+    job_data = extract_all(job_raw, is_job=True)
 
-    base_resume_skills = resume_data["skills"]
-    base_job_skills = job_data["skills"]
+    resume_taxonomy_skills = extract_taxonomy_matches(resume_raw, taxonomy_terms)
+    job_taxonomy_skills = extract_taxonomy_matches(job_raw, taxonomy_terms)
 
-    reference_resume_skills = extract_reference_terms_from_text(resume_raw, reference_terms)
-    reference_job_skills = extract_reference_terms_from_text(job_raw, reference_terms)
-
-    final_resume_skills = combine_skills(base_resume_skills, reference_resume_skills)
-    final_job_skills = combine_skills(base_job_skills, reference_job_skills)
-
-    resume_data["skills"] = final_resume_skills
-    job_data["skills"] = final_job_skills
-
-    result = overall_match(
-        resume_clean,
-        job_clean,
-        final_resume_skills,
-        final_job_skills
+    resume_data["skills"] = clean_final_skills(
+        combine_skills(resume_data["skills"], resume_taxonomy_skills)
+    )
+    job_data["skills"] = clean_final_skills(
+        combine_skills(job_data["skills"], job_taxonomy_skills)
     )
 
-    print_results(resume_data, job_data, result, resume_raw, job_raw)
+    data_dir = PROJECT_ROOT / "data"
+    resume_domain_conf = predict_domain(resume_raw, data_dir)
+    job_domain_conf = predict_domain(job_raw, data_dir)
+
+    result = overall_match(
+        resume_text=resume_clean,
+        job_text=job_clean,
+        resume_skills=resume_data["skills"],
+        job_skills=job_data["skills"],
+        resume_years=resume_data["experience_years"],
+        required_years=job_data["required_years"],
+        resume_education=resume_data["education_level"],
+        required_education=job_data["education_level"],
+        resume_bullets=resume_data["bullets"],
+        job_bullets=job_data["bullets"],
+        resume_domain_conf=resume_domain_conf,
+        job_domain_conf=job_domain_conf,
+    )
+
+    print_results(
+        resume_data=resume_data,
+        job_data=job_data,
+        result=result,
+        resume_raw=resume_raw,
+        job_raw=job_raw,
+        resume_domain_conf=resume_domain_conf,
+        job_domain_conf=job_domain_conf,
+    )
 
 
 if __name__ == "__main__":

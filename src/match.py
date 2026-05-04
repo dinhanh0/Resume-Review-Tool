@@ -1,26 +1,24 @@
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+from domain_synonyms import ALL_RELATED_GROUPS
+from semantic import semantic_similarity, best_pair_similarity, are_semantically_related
 
+EDUCATION_ORDER = {
+    "unknown": 0,
+    "high_school": 1,
+    "associate": 2,
+    "bachelor": 3,
+    "master": 4,
+    "phd": 5,
+}
 
-RELATED_SKILL_GROUPS = [
-    {"git", "github"},
-    {"sql", "ms sql", "mssql", "mysql", "postgresql", "oracle"},
-    {"api", "api development", "rest api"},
-    {"html", "css", "javascript"},
-    {"c#", ".net", ".net core", ".net framework", "asp.net", "asp.net mvc", "blazor"},
-    {"python", "java", "c++", "javascript", "typescript"},
-    {"data structures", "algorithms", "software engineering"},
-]
-
-
-def text_similarity(resume_text, job_text):
-    docs = [resume_text, job_text]
-
-    vectorizer = TfidfVectorizer()
-    matrix = vectorizer.fit_transform(docs)
-
-    score = cosine_similarity(matrix[0:1], matrix[1:2])[0][0]
-    return round(score * 100, 2)
+BLOCKED_RELATED_PAIRS = {
+    ("clients", "presentations"),
+    ("presentations", "clients"),
+    ("java", "finance"),
+    ("java", "accounting"),
+    ("java", "fp&a"),
+    ("tools", "python"),
+    ("models", "python"),
+}
 
 
 def are_related(skill_a, skill_b):
@@ -30,11 +28,14 @@ def are_related(skill_a, skill_b):
     if a == b:
         return True
 
-    for group in RELATED_SKILL_GROUPS:
+    if (a, b) in BLOCKED_RELATED_PAIRS:
+        return False
+
+    for group in ALL_RELATED_GROUPS:
         if a in group and b in group:
             return True
 
-    return False
+    return are_semantically_related(a, b, threshold=0.78)
 
 
 def skill_match(resume_skills, job_skills):
@@ -77,7 +78,7 @@ def skill_match(resume_skills, job_skills):
     related_points = len(related) * 0.5
     total_possible = len(job_skills)
 
-    score = 0
+    score = 0.0
     if total_possible > 0:
         score = round(((exact_points + related_points) / total_possible) * 100, 2)
 
@@ -89,17 +90,82 @@ def skill_match(resume_skills, job_skills):
     }
 
 
-def overall_match(resume_text, job_text, resume_skills, job_skills):
-    sim_score = text_similarity(resume_text, job_text)
-    skill_data = skill_match(resume_skills, job_skills)
+def experience_alignment(resume_years: float, required_years: float) -> float:
+    if required_years <= 0:
+        return 100.0
+    if resume_years <= 0:
+        return 0.0
 
-    final_score = round((sim_score * 0.6) + (skill_data["score"] * 0.4), 2)
+    ratio = min(resume_years / required_years, 1.0)
+    return round(ratio * 100, 2)
+
+
+def education_alignment(resume_level: str, required_level: str) -> float:
+    resume_rank = EDUCATION_ORDER.get(resume_level, 0)
+    required_rank = EDUCATION_ORDER.get(required_level, 0)
+
+    if required_rank == 0:
+        return 100.0
+    if resume_rank >= required_rank:
+        return 100.0
+
+    ratio = resume_rank / required_rank
+    return round(ratio * 100, 2)
+
+
+def domain_alignment(resume_domain_conf, job_domain_conf):
+    resume_domain, _ = resume_domain_conf
+    job_domain, _ = job_domain_conf
+
+    if resume_domain == "unknown" or job_domain == "unknown":
+        return 50.0
+
+    if resume_domain == job_domain:
+        return 100.0
+
+    return 25.0
+
+
+def overall_match(
+    resume_text,
+    job_text,
+    resume_skills,
+    job_skills,
+    resume_years,
+    required_years,
+    resume_education,
+    required_education,
+    resume_bullets,
+    job_bullets,
+    resume_domain_conf,
+    job_domain_conf,
+):
+    text_score = semantic_similarity(resume_text, job_text)
+    bullet_score = best_pair_similarity(resume_bullets, job_bullets)
+    skill_data = skill_match(resume_skills, job_skills)
+    exp_score = experience_alignment(resume_years, required_years)
+    edu_score = education_alignment(resume_education, required_education)
+    domain_score = domain_alignment(resume_domain_conf, job_domain_conf)
+
+    final_score = round(
+        (skill_data["score"] * 0.30) +
+        (text_score * 0.20) +
+        (bullet_score * 0.20) +
+        (exp_score * 0.15) +
+        (edu_score * 0.10) +
+        (domain_score * 0.05),
+        2
+    )
 
     return {
-        "text_similarity": sim_score,
+        "text_similarity": text_score,
+        "bullet_similarity": bullet_score,
         "skill_score": skill_data["score"],
+        "experience_score": exp_score,
+        "education_score": edu_score,
+        "domain_score": domain_score,
         "matched_skills": skill_data["matched"],
         "related_skills": skill_data["related"],
         "missing_skills": skill_data["missing"],
-        "overall_score": final_score
+        "overall_score": final_score,
     }
