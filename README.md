@@ -55,6 +55,7 @@ python main.py
 ```
 
 ## train_model.py
+
 Trains the resume domain-classification model.
 
 It:
@@ -78,7 +79,8 @@ lowercase conversion
 punctuation cleanup
 tokenization
 stopword removal
-src/extract.py
+
+## src/extract.py
 
 Extracts structured information from text.
 
@@ -90,7 +92,21 @@ phone number
 education level
 years of experience
 named entities
-src/match.py
+
+
+## src/feedback.py
+
+Generates user-friendly feedback from the matching results.
+
+Examples:
+
+matched skills
+missing skills
+suggestions for improvement
+overall match comments
+
+
+## src/match.py
 
 Computes similarity and final scoring.
 
@@ -102,11 +118,14 @@ experience alignment
 education alignment
 domain alignment
 overall weighted score
-src/semantic.py
+
+
+## src/semantic.py
 
 Handles semantic similarity.
 
 Used to compare resume and job description meaning with Sentence-BERT embeddings.
+
 
 ## src/taxonomy.py
 
@@ -114,7 +133,8 @@ Loads reference skill data and matches taxonomy terms found in text.
 
 Used to improve skill detection.
 
-src/domain_classifier.py
+
+## src/domain_classifier.py
 
 Loads the saved classifier model and predicts the domain/job family of input text.
 
@@ -124,7 +144,8 @@ finance
 HR
 healthcare
 software
-src/domain_synonyms.py
+
+## src/domain_synonyms.py
 
 Stores domain groups, related skill groups, and synonym-style mappings used in matching and classification support.
 
