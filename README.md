@@ -38,116 +38,129 @@ RESUME-REVIEW-TOOL/
 # File Descriptions
 
 ## main.py
+Main program entry point.
 
-The main entry point of the program.
-
-This file connects all modules together.
-
-Typical workflow:
-
-1. Load resume text
-2. Load job description text
-3. Preprocess both texts
-4. Extract important information
-5. Compare resume against job description
-6. Print final score and feedback
+It:
+1. gets resume input
+2. gets job description input
+3. preprocesses text
+4. extracts features
+5. compares both documents
+6. prints score and feedback
 
 Run with:
 
 ```bash
 python main.py
-```
+train_model.py
 
----
+Trains the resume domain-classification model.
 
-## src/preprocess.py
+It:
 
-Handles text cleaning before analysis.
+loads labeled resume PDFs
+cleans and caches text
+trains the TF-IDF + MLP model
+saves the model and label encoder
 
-Functions may include:
+Run with:
 
-* converting text to lowercase
-* removing punctuation
-* removing stopwords
-* tokenizing words
-* normalizing text
+python train_model.py
+src/preprocess.py
 
-Purpose:
-
-Makes resume and job description text easier to compare accurately.
-
----
-
-## src/extract.py
-
-Extracts important information from text.
-
-Current extraction includes:
-
-* technical skills
-* email address
-* phone number
-* named entities using spaCy
-* years of experience (basic pattern matching)
-
-Purpose:
-
-Turns raw resume text into structured data.
-
-Example:
-
-```python
-{
-  "skills": ["python", "sql", "aws"],
-  "email": "user@email.com"
-}
-```
-
----
-
-## src/match.py
-
-Compares resume data with job description data.
-
-Current methods include:
-
-* TF-IDF cosine similarity
-* matched skills
-* missing skills
-* skill match percentage
-* combined overall score
-
-Purpose:
-
-Measures how well a resume fits a job posting.
-
-Example output:
-
-```python
-{
-  "overall_score": 81.5,
-  "matched_skills": ["python", "sql"],
-  "missing_skills": ["docker"]
-}
-```
-
----
-
-## src/feedback.py
-
-Converts scoring results into human-readable suggestions.
+Cleans and normalizes text before analysis.
 
 Examples:
 
-* Your resume strongly matches this role.
-* Add Docker or Kubernetes experience.
-* Improve keyword alignment with the job posting.
+lowercase conversion
+punctuation cleanup
+tokenization
+stopword removal
+src/extract.py
 
-Purpose:
+Extracts structured information from text.
 
-Makes technical scores useful to the user.
+Current extraction includes:
 
----
+skills
+email
+phone number
+education level
+years of experience
+named entities
+src/match.py
+
+Computes similarity and final scoring.
+
+Includes:
+
+skill matching
+semantic similarity
+experience alignment
+education alignment
+domain alignment
+overall weighted score
+src/semantic.py
+
+Handles semantic similarity.
+
+Used to compare resume and job description meaning with Sentence-BERT embeddings.
+
+src/taxonomy.py
+
+Loads reference skill data and matches taxonomy terms found in text.
+
+Used to improve skill detection.
+
+src/domain_classifier.py
+
+Loads the saved classifier model and predicts the domain/job family of input text.
+
+Examples:
+
+finance
+HR
+healthcare
+software
+src/domain_synonyms.py
+
+Stores domain groups, related skill groups, and synonym-style mappings used in matching and classification support.
+
+requirements.txt
+
+Lists Python packages needed to run the project.
+
+Install with:
+
+pip install -r requirements.txt
+models/
+
+Stores saved trained model files.
+
+Main files:
+
+resume_category_model.joblib
+resume_label_encoder.joblib
+data/
+
+Contains project datasets and reference data.
+
+Examples:
+
+resume/job sample datasets
+detailed resume training data
+job skill reference data
+cached cleaned resume data
+resume input/
+
+Folder for resume files used by file-input mode.
+
+Supported types:
+
+.pdf
+.docx
+.txt
+
 
 ## requirements.txt
 
@@ -163,25 +176,22 @@ pip install -r requirements.txt
 
 # Setup Instructions
 
-## 1. Install dependencies
+To setup and run the project
 
 ```bash
-pip install -r requirements.txt
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe main.py
 ```
 
-## 2. Install spaCy language model
+To retrain the model
 
 ```bash
-python -m spacy download en_core_web_sm
+.\.venv\Scripts\python.exe train_model.py
 ```
 
-## 3. Run project
-
-```bash
-python main.py
-```
-
----
+One more practical note: this assumes Python 3.12 is installed on the computer already.
 
 # Author
 
