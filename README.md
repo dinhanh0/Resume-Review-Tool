@@ -52,8 +52,9 @@ Run with:
 
 ```bash
 python main.py
-train_model.py
+```
 
+## train_model.py
 Trains the resume domain-classification model.
 
 It:
@@ -66,7 +67,8 @@ saves the model and label encoder
 Run with:
 
 python train_model.py
-src/preprocess.py
+
+## src/preprocess.py
 
 Cleans and normalizes text before analysis.
 
@@ -106,7 +108,7 @@ Handles semantic similarity.
 
 Used to compare resume and job description meaning with Sentence-BERT embeddings.
 
-src/taxonomy.py
+## src/taxonomy.py
 
 Loads reference skill data and matches taxonomy terms found in text.
 
@@ -126,7 +128,7 @@ src/domain_synonyms.py
 
 Stores domain groups, related skill groups, and synonym-style mappings used in matching and classification support.
 
-requirements.txt
+## requirements.txt
 
 Lists Python packages needed to run the project.
 
@@ -161,16 +163,6 @@ Supported types:
 .docx
 .txt
 
-
-## requirements.txt
-
-Contains all required Python libraries.
-
-Install with:
-
-```bash
-pip install -r requirements.txt
-```
 
 ---
 
